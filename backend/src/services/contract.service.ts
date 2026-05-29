@@ -41,12 +41,8 @@ export function __resetRpcServerFactoryForTests(): void {
     new StellarSdk.rpc.Server(rpcUrl, { allowHttp: true });
 }
 
-function requireEnv(name: string, fallback = ""): string {
-  const value = process.env[name] ?? fallback;
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
+function getRpcUrl(): string {
+  return env.STELLAR_RPC_URL || DEFAULT_RPC_URL;
 }
 
 function resolveNetworkPassphrase(
@@ -59,12 +55,20 @@ function resolveNetworkPassphrase(
 
   switch (configuredNetwork?.toUpperCase()) {
     case "PUBLIC":
+    case "MAINNET":
       return StellarSdk.Networks.PUBLIC;
     case "FUTURENET":
       return StellarSdk.Networks.FUTURENET;
     default:
       return StellarSdk.Networks.TESTNET;
   }
+}
+
+function getNetworkPassphrase(): string {
+  return resolveNetworkPassphrase(
+    process.env.STELLAR_NETWORK_PASSPHRASE ?? env.STELLAR_NETWORK_PASSPHRASE,
+    process.env.STELLAR_NETWORK ?? env.STELLAR_NETWORK,
+  );
 }
 
 function getRpcServer(rpcUrl: string): StellarSdk.rpc.Server {
@@ -94,17 +98,6 @@ async function simulateRpcTransaction(
 
 function getEscrowContractId(): string {
   return env.AMANA_ESCROW_CONTRACT_ID;
-}
-
-function getRpcUrl(): string {
-  return process.env.SOROBAN_RPC_URL || process.env.STELLAR_RPC_URL || DEFAULT_RPC_URL;
-}
-
-function getNetworkPassphrase(): string {
-  return resolveNetworkPassphrase(
-    process.env.STELLAR_NETWORK_PASSPHRASE,
-    process.env.STELLAR_NETWORK,
-  );
 }
 
 /**
