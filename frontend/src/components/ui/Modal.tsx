@@ -61,7 +61,7 @@ export function ModalContent({
       />
       <Dialog.Content
         className={clsx(
-          "fixed z-50 bg-card border border-border-default shadow-modal",
+          "fixed z-50 bg-card dark:bg-surface-1 border border-border-default dark:border-border-default shadow-modal",
           "transition-all duration-200 ease-out",
           "data-[state=open]:opacity-100 data-[state=closed]:opacity-0",
           "data-[state=open]:scale-100 data-[state=closed]:scale-95",
@@ -75,7 +75,7 @@ export function ModalContent({
         {showCloseButton ? (
           <Dialog.Close
             aria-label="Close dialog"
-            className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-elevated hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold"
+            className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-lg text-text-secondary dark:text-text-secondary transition-colors hover:bg-elevated dark:hover:bg-surface-2 hover:text-text-primary dark:hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold"
           >
             <X size={18} />
           </Dialog.Close>
@@ -91,12 +91,12 @@ export function ModalHeader({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={clsx("border-b border-border-default px-6 py-5 pr-14", className)} {...props} />
+    <div className={clsx("border-b border-border-default dark:border-border-default px-6 py-5 pr-14", className)} {...props} />
   );
 }
 
 export function ModalTitle(props: React.ComponentPropsWithoutRef<typeof Dialog.Title>) {
-  return <Dialog.Title className={clsx("text-xl font-semibold text-primary", props.className)} {...props} />;
+  return <Dialog.Title className={clsx("text-xl font-semibold text-primary dark:text-text-primary", props.className)} {...props} />;
 }
 
 export function ModalDescription(
@@ -121,7 +121,7 @@ export function ModalFooter({
   return (
     <div
       className={clsx(
-        "flex flex-col-reverse gap-2 border-t border-border-default px-6 py-4 sm:flex-row sm:justify-end",
+        "flex flex-col-reverse gap-2 border-t border-border-default dark:border-border-default px-6 py-4 sm:flex-row sm:justify-end",
         className
       )}
       {...props}
