@@ -1,10 +1,10 @@
-import { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/db";
+import { redis } from "../lib/redis";
 import { appLogger } from "../middleware/logger";
 import { env } from "../config/env";
-import { horizonServer, sorobanRpcClient } from "../config/stellar";
+import { horizonServer } from "../config/stellar";
 import { getPinataClient } from "../config/ipfs";
-import { redis } from "../lib/redis";
+import { AlertService, alertService as defaultAlertService } from "./alert.service";
 
 interface HealthIndicatorResult {
   status: "up" | "down";
@@ -26,6 +26,7 @@ interface HealthCheckResponse {
   };
   details: {
     databaseLatency: number;
+    redisLatency: number;
     indexerLagSeconds: number;
     lastProcessedLedger: number | null;
     stellarNetwork: string;
@@ -35,11 +36,18 @@ interface HealthCheckResponse {
 }
 
 type HealthDatabase = any;
+interface HealthRedis {
+  ping(): Promise<string>;
+}
 
 export class HealthService {
   private startTime: number = Date.now();
 
-  constructor(private readonly prisma: HealthDatabase = defaultPrisma) {}
+  constructor(
+    private readonly prisma: HealthDatabase = defaultPrisma,
+    private readonly cacheClient: HealthRedis = redis as unknown as HealthRedis,
+    private readonly alerts: AlertService = defaultAlertService,
+  ) {}
 
   /**
    * Check database connectivity and query performance
@@ -50,8 +58,7 @@ export class HealthService {
     const timeout = 200; // 200ms threshold
 
     try {
-      // Execute a simple query to verify database access
-      const result = await Promise.race([
+      await Promise.race([
         this.prisma.$queryRaw`SELECT 1 as health_check`,
         new Promise((_, reject) =>
           setTimeout(
@@ -97,7 +104,6 @@ export class HealthService {
     const maxLagSeconds = 15;
 
     try {
-      // Fetch the most recent processed ledger
       const latestLedger = await this.prisma.processedLedger.findFirst({
         orderBy: { ledgerSequence: "desc" },
         take: 1,
@@ -113,7 +119,6 @@ export class HealthService {
         };
       }
 
-      // Check if the ledger was processed within the last 15 seconds
       const ledgerAge =
         (Date.now() - latestLedger.processedAt.getTime()) / 1000;
 
@@ -146,7 +151,7 @@ export class HealthService {
    */
   private async checkStellar(): Promise<HealthIndicatorResult> {
     const startTime = Date.now();
-    const timeout = 5000; // 5 seconds
+    const timeout = 5000;
 
     try {
       await Promise.race([
@@ -178,13 +183,13 @@ export class HealthService {
    */
   private async checkIPFS(): Promise<HealthIndicatorResult> {
     const startTime = Date.now();
-    const timeout = 5000; // 5 seconds
+    const timeout = 5000;
 
     try {
       const pinata = getPinataClient();
-      // Pinata SDK may not have testAuthentication, try a simple operation instead
       await Promise.race([
-        (pinata as any).testAuthentication?.() || Promise.resolve(),
+        (pinata as { testAuthentication?: () => Promise<unknown> }).testAuthentication?.()
+          ?? Promise.resolve(),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("IPFS timeout")), timeout),
         ),
@@ -198,7 +203,6 @@ export class HealthService {
       };
     } catch (error) {
       const responseTime = Date.now() - startTime;
-      // IPFS is optional for some operations, so log but don't fail hard
       appLogger.warn({ error }, "IPFS health check failed (optional service)");
       return {
         status: "down",
@@ -209,15 +213,15 @@ export class HealthService {
   }
 
   /**
-   * Check Redis connectivity
+   * Check Redis cache connectivity
    */
   private async checkRedis(): Promise<HealthIndicatorResult> {
     const startTime = Date.now();
-    const timeout = 3000; // 3 seconds
+    const timeout = 3000;
 
     try {
       await Promise.race([
-        (redis as any).ping(),
+        this.cacheClient.ping(),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Redis timeout")), timeout),
         ),
@@ -247,7 +251,6 @@ export class HealthService {
     const startTime = Date.now();
     const missingVars: string[] = [];
 
-    // Check critical environment variables
     const criticalVars = [
       "DATABASE_URL",
       "JWT_SECRET",
@@ -278,6 +281,23 @@ export class HealthService {
     };
   }
 
+  private async dispatchAlerts(
+    databaseCheck: HealthIndicatorResult,
+    redisCheck: HealthIndicatorResult,
+  ): Promise<void> {
+    if (databaseCheck.status === "down") {
+      await this.alerts.dispatch("db_connection_failure", databaseCheck.message, {
+        responseTime: databaseCheck.responseTime,
+      });
+    }
+
+    if (redisCheck.status === "down") {
+      await this.alerts.dispatch("redis_connection_failure", redisCheck.message, {
+        responseTime: redisCheck.responseTime,
+      });
+    }
+  }
+
   /**
    * Perform comprehensive health check
    * Returns detailed status for uptime integrations (Datadog, UptimeRobot, etc.)
@@ -286,7 +306,6 @@ export class HealthService {
     const timestamp = new Date().toISOString();
     const uptime = Date.now() - this.startTime;
 
-    // Run checks in parallel
     const [
       databaseCheck,
       indexerCheck,
@@ -303,40 +322,41 @@ export class HealthService {
       this.checkConfig(),
     ]);
 
-    // Determine overall status
+    await this.dispatchAlerts(databaseCheck, redisCheck);
+
     let status: "healthy" | "degraded" | "unhealthy" = "healthy";
 
-    // Critical failures cause unhealthy status
     if (
-      databaseCheck.status === "down" ||
-      indexerCheck.status === "down" ||
-      stellarCheck.status === "down" ||
-      configCheck.status === "down"
+      databaseCheck.status === "down"
+      || indexerCheck.status === "down"
+      || stellarCheck.status === "down"
+      || configCheck.status === "down"
     ) {
       status = "unhealthy";
-    }
-    // Optional service failures or slow responses cause degraded status
-    else if (
-      redisCheck.status === "down" ||
-      ipfsCheck.status === "down" ||
-      databaseCheck.responseTime > 150 ||
-      indexerCheck.responseTime > 150 ||
-      stellarCheck.responseTime > 5000
+    } else if (
+      redisCheck.status === "down"
+      || ipfsCheck.status === "down"
+      || databaseCheck.responseTime > 150
+      || indexerCheck.responseTime > 150
+      || stellarCheck.responseTime > 5000
     ) {
       status = "degraded";
     }
 
-    // Fetch latest ledger for details
-    const latestLedger = await this.prisma.processedLedger.findFirst({
-      orderBy: { ledgerSequence: "desc" },
-      take: 1,
-    });
+    let latestLedger: { ledgerSequence: number; processedAt: Date } | null = null;
+    try {
+      latestLedger = await this.prisma.processedLedger.findFirst({
+        orderBy: { ledgerSequence: "desc" },
+        take: 1,
+      });
+    } catch (error) {
+      appLogger.error({ error }, "Failed to fetch latest ledger for health details");
+    }
 
     const indexerLagSeconds = latestLedger
       ? (Date.now() - latestLedger.processedAt.getTime()) / 1000
       : -1;
 
-    // Extract missing env vars from config check
     const missingEnvVars =
       configCheck.status === "down"
         ? configCheck.message
@@ -358,6 +378,7 @@ export class HealthService {
       },
       details: {
         databaseLatency: databaseCheck.responseTime,
+        redisLatency: redisCheck.responseTime,
         indexerLagSeconds: indexerLagSeconds > 0 ? indexerLagSeconds : 0,
         lastProcessedLedger: latestLedger?.ledgerSequence ?? null,
         stellarNetwork: env.STELLAR_NETWORK,

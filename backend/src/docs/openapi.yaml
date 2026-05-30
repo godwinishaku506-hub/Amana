@@ -291,18 +291,37 @@ components:
               $ref: "#/components/schemas/HealthIndicator"
             indexer:
               $ref: "#/components/schemas/HealthIndicator"
-          required: [database, indexer]
+            stellar:
+              $ref: "#/components/schemas/HealthIndicator"
+            ipfs:
+              $ref: "#/components/schemas/HealthIndicator"
+            redis:
+              $ref: "#/components/schemas/HealthIndicator"
+            config:
+              $ref: "#/components/schemas/HealthIndicator"
+          required: [database, indexer, stellar, ipfs, redis, config]
         details:
           type: object
           properties:
             databaseLatency:
+              type: number
+            redisLatency:
               type: number
             indexerLagSeconds:
               type: number
             lastProcessedLedger:
               type: integer
               nullable: true
-          required: [databaseLatency, indexerLagSeconds, lastProcessedLedger]
+            stellarNetwork:
+              type: string
+            ipfsGateway:
+              type: string
+            missingEnvVars:
+              type: array
+              items:
+                type: string
+          required:
+            [databaseLatency, redisLatency, indexerLagSeconds, lastProcessedLedger, stellarNetwork, ipfsGateway, missingEnvVars]
       required: [status, timestamp, uptime, checks, details]
     LivenessResponse:
       type: object
@@ -815,7 +834,7 @@ paths:
       tags: [Health]
       summary: Run a comprehensive health check
       description: |-
-        Returns composite health state for database and indexer dependencies.
+        Returns composite health state for database, Redis cache, and indexer dependencies.
         Error code references: `INFRA_ERROR`, `INTERNAL_ERROR`.
       responses:
         "200":
