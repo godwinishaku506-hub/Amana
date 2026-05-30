@@ -117,23 +117,23 @@ For the protected branch (`main`), set these required status checks:
 
 ### Phase 1: The Vault (MVP)
 
-- [ ] Develop core Soroban contract logic (`deposit`, `release`, `refund`).
-- [ ] Implement basic Next.js UI for trade creation.
+- [x] Develop core Soroban contract logic (`deposit`, `release`, `refund`).
+- [x] Implement basic Next.js UI for trade creation.
 
 ### Phase 2: The Agreement Engine
 
-- [ ] Integrate `Loss_Ratio` variables into the smart contract.
-- [ ] Build the "Mediator" dashboard for dispute resolution.
+- [x] Integrate `Loss_Ratio` variables into the smart contract.
+- [x] Build the "Mediator" dashboard for dispute resolution.
 
 ### Phase 3: Evidence & Logistics
 
-- [ ] IPFS integration for video evidence uploads.
-- [ ] Driver manifest logging and tracking interface.
+- [x] IPFS integration for video evidence uploads.
+- [x] Driver manifest logging and tracking interface.
 
 ### Phase 4: Mainnet & Scale
 
 - [ ] Public pilot program with regional agricultural cooperatives.
-- [ ] Implementation of a "Trust Score" reputation system.
+- [x] Implementation of a "Trust Score" reputation system.
 
 ---
 
