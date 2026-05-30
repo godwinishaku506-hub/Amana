@@ -2,6 +2,18 @@ import crypto from "crypto";
 import { Prisma, PrismaClient, Trade, TradeStatus, DisputeStatus } from "@prisma/client";
 import { prisma as defaultPrisma } from "../lib/db";
 import { ContractService } from "./contract.service";
+import { appLogger } from "../middleware/logger";
+import { TracingHelper } from "../config/tracing";
+
+function parseAdminPubkeys(): Set<string> {
+  const raw = process.env.ADMIN_STELLAR_PUBKEYS ?? "";
+  return new Set(
+    raw
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -56,6 +68,20 @@ export class TradeService {
   ) { }
 
   async createPendingTrade(input: CreatePendingTradeInput): Promise<Trade> {
+    appLogger.info({
+      requestId: undefined, // Will be filled by context if available
+      userId: input.buyerAddress,
+      paymentId: input.tradeId,
+      provider: "stellar",
+      status: "authorization_started",
+      timestamp: new Date().toISOString()
+    }, "Payment authorization started");
+
+    TracingHelper.addEvent("authorization_started", {
+      paymentId: input.tradeId,
+      userId: input.buyerAddress
+    });
+
     return this.prisma.trade.create({
       data: {
         ...input,
@@ -114,7 +140,12 @@ export class TradeService {
       return null;
     }
 
-    if (trade.buyerAddress !== callerAddress && trade.sellerAddress !== callerAddress) {
+    const caller = callerAddress.toLowerCase();
+    if (
+      trade.buyerAddress.toLowerCase() !== caller &&
+      trade.sellerAddress.toLowerCase() !== caller &&
+      !parseAdminPubkeys().has(caller)
+    ) {
       throw new TradeAccessDeniedError();
     }
 
