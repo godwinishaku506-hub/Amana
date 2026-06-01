@@ -140,22 +140,25 @@ public async getAccountBalance(publicKey: string, assetCode: string = TOKEN_CONF
         performance.now() - start,
       );
       return transaction.toXDR();
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const outcome = classifySubmissionError(error as any);
       recordTransactionSubmission(
         "build_transaction",
-        classifySubmissionError(error),
+        outcome,
         performance.now() - start,
       );
-      if (error.response && error.response.status === 404) {
+      const status = (error as any)?.response?.status;
+      if (status === 404) {
         appLogger.error({ error, sourceAccount }, "Source account not found");
         throw new Error("Source account does not exist");
       }
-      if (error.message && error.message.includes('operation')) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('operation')) {
         appLogger.error({ error }, "Invalid transaction operations");
-        throw new Error(`Invalid transaction operations: ${error.message}`);
+        throw new Error(`Invalid transaction operations: ${msg}`);
       }
       appLogger.error({ error }, "Failed to build transaction");
-      throw new Error(`Failed to build transaction: ${error.message || 'Unknown error'}`);
+      throw new Error(`Failed to build transaction: ${msg || 'Unknown error'}`);
     }
   }
 
@@ -287,8 +290,8 @@ public async getAccountBalance(publicKey: string, assetCode: string = TOKEN_CONF
             "stellar.transaction.hash": response.hash ?? "unknown",
           });
           return response;
-        } catch (error: any) {
-          const outcome = classifySubmissionError(error);
+        } catch (error: unknown) {
+          const outcome = classifySubmissionError(error as any);
           if (
             outcome !== "contract_panic" &&
             outcome !== "rpc_error"
@@ -304,23 +307,26 @@ public async getAccountBalance(publicKey: string, assetCode: string = TOKEN_CONF
             "stellar.transaction.outcome": outcome,
           });
 
-          if (error.message && error.message.includes("XDR")) {
+          const msg = error instanceof Error ? error.message : String(error);
+
+          if (msg && msg.includes("XDR")) {
             appLogger.error({ error }, "Invalid transaction XDR");
-            throw new Error(`Invalid transaction XDR: ${error.message}`);
+            throw new Error(`Invalid transaction XDR: ${msg}`);
           }
 
           if (
-            error.message &&
-            (error.message.includes("RPC Error:") ||
-              error.message.includes("Contract Panic:"))
+            msg &&
+            (msg.includes("RPC Error:") ||
+              msg.includes("Contract Panic:"))
           ) {
             throw error;
           }
 
+          const code = (error as any)?.code;
           const isTimeout =
-            error.code === "ETIMEDOUT" ||
-            error.code === "ECONNABORTED" ||
-            /timeout|timed out|deadline/i.test(error.message ?? "");
+            code === "ETIMEDOUT" ||
+            code === "ECONNABORTED" ||
+            /timeout|timed out|deadline/i.test(msg ?? "");
 
           if (isTimeout) {
             appLogger.error(
@@ -328,13 +334,13 @@ public async getAccountBalance(publicKey: string, assetCode: string = TOKEN_CONF
               "Stellar transaction submission timed out",
             );
             throw new Error(
-              `Transaction submission failed: Stellar RPC timed out — ${error.message || "no details"}`,
+              `Transaction submission failed: Stellar RPC timed out — ${msg || "no details"}`,
             );
           }
 
           appLogger.error({ error }, "Transaction submission failed");
           throw new Error(
-            `Transaction submission failed: ${error.message || "Unknown error"}`,
+            `Transaction submission failed: ${msg || "Unknown error"}`,
           );
         }
       },

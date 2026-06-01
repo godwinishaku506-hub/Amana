@@ -27,7 +27,7 @@ export async function isAlreadyProcessed(
   prisma: PrismaClient,
   key: { ledgerSequence: number; contractId: string; eventId: string }
 ): Promise<boolean> {
-  const existing = await (prisma as any).processedEvent.findUnique({
+  const existing = await prisma.processedEvent.findUnique({
     where: {
       ledgerSequence_contractId_eventId: key,
     },
@@ -39,7 +39,10 @@ export async function isAlreadyProcessed(
  * Returns true if the error is a Prisma unique-constraint violation (P2002).
  */
 export function isPrismaUniqueConstraintError(err: unknown): boolean {
-  return (err as any)?.code === "P2002";
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError &&
+    err.code === "P2002"
+  );
 }
 
 /**
@@ -58,7 +61,7 @@ export async function processEventAtomically(
   try {
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       await handler(tx, event);
-      await (tx as any).processedEvent.create({
+      await tx.processedEvent.create({
         data: {
           ledgerSequence: event.ledgerSequence,
           contractId: event.contractId,
@@ -107,7 +110,7 @@ export class EventListenerService {
     this.running = true;
 
     // Hydrate in-memory set from DB on startup
-    const recentEvents = await (this.prisma as any).processedEvent.findMany({
+    const recentEvents = await this.prisma.processedEvent.findMany({
       orderBy: { ledgerSequence: "desc" },
       take: this.config.processedLedgersCacheSize,
     });
@@ -244,8 +247,13 @@ export class EventListenerService {
   }
 
   private supportsOutboxPersistence(): boolean {
-    const outbox = (this.prisma as any).chainEventOutbox;
-    return Boolean(outbox && typeof outbox.findUnique === "function");
+    // If the Prisma client was generated with a `chainEventOutbox` model,
+    // it will be available on the client. Use feature-detection rather than
+    // unsafe casts.
+    const outbox = (this.prisma as unknown as Record<string, unknown>)[
+      "chainEventOutbox"
+    ];
+    return Boolean(outbox && typeof (outbox as any).findUnique === "function");
   }
 
   private async ensureOutboxRecord(event: ParsedEvent): Promise<OutboxRecord> {
@@ -255,7 +263,7 @@ export class EventListenerService {
       eventId: event.eventId,
     };
 
-    const existing = await (this.prisma as any).chainEventOutbox.findUnique({
+    const existing = await this.prisma.chainEventOutbox.findUnique({
       where: {
         ledgerSequence_contractId_eventId: key,
       },
@@ -272,7 +280,7 @@ export class EventListenerService {
     }
 
     try {
-      const created = await (this.prisma as any).chainEventOutbox.create({
+      const created = await this.prisma.chainEventOutbox.create({
         data: {
           ledgerSequence: event.ledgerSequence,
           contractId: event.contractId,
@@ -294,7 +302,7 @@ export class EventListenerService {
       if (!isPrismaUniqueConstraintError(error)) {
         throw error;
       }
-      const concurrent = await (this.prisma as any).chainEventOutbox.findUnique({
+      const concurrent = await this.prisma.chainEventOutbox.findUnique({
         where: {
           ledgerSequence_contractId_eventId: key,
         },
@@ -331,14 +339,14 @@ export class EventListenerService {
     try {
       await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await dispatchEvent(tx, event);
-        await (tx as any).processedEvent.create({
+        await tx.processedEvent.create({
           data: {
             ledgerSequence: event.ledgerSequence,
             contractId: event.contractId,
             eventId: event.eventId,
           },
         });
-        await (tx as any).chainEventOutbox.update({
+        await tx.chainEventOutbox.update({
           where: { id: outboxId },
           data: {
             status: "PROCESSED",
@@ -354,7 +362,7 @@ export class EventListenerService {
       if (!isPrismaUniqueConstraintError(error)) {
         throw error;
       }
-      await (this.prisma as any).chainEventOutbox.update({
+      await this.prisma.chainEventOutbox.update({
         where: { id: outboxId },
         data: {
           status: "PROCESSED",
@@ -380,7 +388,7 @@ export class EventListenerService {
     const now = Date.now();
     const message = error instanceof Error ? error.message : String(error);
 
-    await (this.prisma as any).chainEventOutbox.update({
+    await this.prisma.chainEventOutbox.update({
       where: { id: outbox.id },
       data: {
         attempts: nextAttempts,
