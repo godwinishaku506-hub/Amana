@@ -202,6 +202,42 @@ public async getAccountBalance(publicKey: string, assetCode: string = TOKEN_CONF
             hash: response.hash,
           }, "Transaction submitted");
 
+          if (response.status === "DUPLICATE") {
+            appLogger.warn({
+              hash: response.hash ?? "unknown",
+              provider: "stellar",
+              timestamp: new Date().toISOString(),
+            }, "Transaction already submitted (DUPLICATE) — treating as accepted");
+            recordTransactionSubmission(
+              "submit_transaction",
+              "success",
+              performance.now() - start,
+            );
+            span.setAttributes({
+              "stellar.transaction.outcome": "success",
+              "stellar.transaction.hash": response.hash ?? "unknown",
+            });
+            return response;
+          }
+
+          if (response.status === "TRY_AGAIN_LATER") {
+            recordTransactionSubmission(
+              "submit_transaction",
+              "rpc_error",
+              performance.now() - start,
+            );
+            span.setAttributes({
+              "stellar.transaction.outcome": "rpc_error",
+              "stellar.transaction.hash": response.hash ?? "unknown",
+            });
+            appLogger.error({
+              provider: "stellar",
+              status: "rate_limited",
+              timestamp: new Date().toISOString(),
+            }, "Stellar RPC node is temporarily unavailable");
+            throw new Error("RPC Error: Stellar node unavailable (TRY_AGAIN_LATER)");
+          }
+
           if (response.status === "ERROR") {
             if (response.errorResult) {
               const errorMessage = this.parseContractError(response.errorResult);
@@ -279,6 +315,21 @@ public async getAccountBalance(publicKey: string, assetCode: string = TOKEN_CONF
               error.message.includes("Contract Panic:"))
           ) {
             throw error;
+          }
+
+          const isTimeout =
+            error.code === "ETIMEDOUT" ||
+            error.code === "ECONNABORTED" ||
+            /timeout|timed out|deadline/i.test(error.message ?? "");
+
+          if (isTimeout) {
+            appLogger.error(
+              { error, provider: "stellar", timestamp: new Date().toISOString() },
+              "Stellar transaction submission timed out",
+            );
+            throw new Error(
+              `Transaction submission failed: Stellar RPC timed out — ${error.message || "no details"}`,
+            );
           }
 
           appLogger.error({ error }, "Transaction submission failed");

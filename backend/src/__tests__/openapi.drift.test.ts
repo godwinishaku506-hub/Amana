@@ -6,8 +6,24 @@ import { createApp } from "../app";
 
 const SPEC_PATH = path.resolve(__dirname, "../docs/openapi.yaml");
 
+interface SchemaObject {
+  type?: string;
+  properties?: Record<string, SchemaObject>;
+  required?: string[];
+  items?: SchemaObject;
+  additionalProperties?: boolean | SchemaObject;
+  $ref?: string;
+  oneOf?: SchemaObject[];
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+}
+
 interface OpenApiSpec {
   paths: Record<string, Record<string, unknown>>;
+  components: {
+    schemas: Record<string, SchemaObject>;
+  };
 }
 
 function loadSpec(): OpenApiSpec {
@@ -115,6 +131,132 @@ describe("OpenAPI drift detection", () => {
     it("GET /trades/:id/history without auth returns 401", async () => {
       const freshApp = createApp();
       const res = await request(freshApp).get("/trades/test-id/history");
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // ── /trades schema drift (#580) ───────────────────────────────────────────
+
+  describe("/trades response schema contracts", () => {
+    it("TradeMutationResponse requires tradeId and unsignedXdr as strings", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeMutationResponse"];
+      expect(schema).toBeDefined();
+      expect(schema.required).toContain("tradeId");
+      expect(schema.required).toContain("unsignedXdr");
+      expect(schema.properties?.tradeId?.type).toBe("string");
+      expect(schema.properties?.unsignedXdr?.type).toBe("string");
+    });
+
+    it("TradeListResponse requires items as an array of TradeSummary", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeListResponse"];
+      expect(schema).toBeDefined();
+      expect(schema.required).toContain("items");
+      expect(schema.properties?.items?.type).toBe("array");
+      expect(schema.properties?.items?.items).toHaveProperty("$ref");
+    });
+
+    it("TradeSummary requires tradeId and documents buyer/seller/amount/status fields", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeSummary"];
+      expect(schema).toBeDefined();
+      expect(schema.required).toContain("tradeId");
+      expect(schema.properties).toHaveProperty("buyerAddress");
+      expect(schema.properties).toHaveProperty("sellerAddress");
+      expect(schema.properties).toHaveProperty("amountUsdc");
+      expect(schema.properties).toHaveProperty("status");
+    });
+
+    it("TradeMutationRequest requires sellerAddress and amountUsdc", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeMutationRequest"];
+      expect(schema).toBeDefined();
+      expect(schema.required).toContain("sellerAddress");
+      expect(schema.required).toContain("amountUsdc");
+      expect(schema.required).toContain("buyerLossBps");
+      expect(schema.required).toContain("sellerLossBps");
+      const bpsSchema = schema.properties?.buyerLossBps;
+      expect(bpsSchema?.minimum).toBe(0);
+      expect(bpsSchema?.maximum).toBe(10000);
+    });
+
+    it("UnsignedXdrResponse requires unsignedXdr (used by deposit/confirm/release)", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["UnsignedXdrResponse"];
+      expect(schema).toBeDefined();
+      expect(schema.required).toContain("unsignedXdr");
+      expect(schema.properties?.unsignedXdr?.type).toBe("string");
+    });
+
+    it("all /trades paths have at least one HTTP method documented", () => {
+      const tradePaths = specPaths(spec).filter((p) => p.startsWith("/trades"));
+      expect(tradePaths.length).toBeGreaterThan(0);
+      for (const p of tradePaths) {
+        const methods = Object.keys(spec.paths[p]);
+        expect(methods.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("ListTradesStatusQuery enum covers the core trade statuses", () => {
+      const allParams: unknown[] = (spec as any).components?.parameters
+        ? Object.values((spec as any).components.parameters)
+        : [];
+      const statusParam = allParams.find(
+        (p: any) => p.name === "status" && p.in === "query",
+      ) as any;
+      expect(statusParam).toBeDefined();
+      expect(statusParam?.schema?.enum).toEqual(
+        expect.arrayContaining(["CREATED", "FUNDED", "DISPUTED"]),
+      );
+    });
+  });
+
+  describe("/trades endpoint auth guard", () => {
+    it("POST /trades without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp)
+        .post("/trades")
+        .send({ sellerAddress: "GC...", amountUsdc: "10", buyerLossBps: 5000, sellerLossBps: 5000 });
+      expect(res.status).toBe(401);
+    });
+
+    it("GET /trades without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp).get("/trades");
+      expect(res.status).toBe(401);
+    });
+
+    it("GET /trades/stats without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp).get("/trades/stats");
+      expect(res.status).toBe(401);
+    });
+
+    it("GET /trades/:id without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp).get("/trades/test-id");
+      expect(res.status).toBe(401);
+    });
+
+    it("POST /trades/:id/deposit without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp).post("/trades/test-id/deposit");
+      expect(res.status).toBe(401);
+    });
+
+    it("POST /trades/:id/confirm without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp).post("/trades/test-id/confirm");
+      expect(res.status).toBe(401);
+    });
+
+    it("POST /trades/:id/release without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp).post("/trades/test-id/release");
+      expect(res.status).toBe(401);
+    });
+
+    it("POST /trades/:id/dispute without auth returns 401", async () => {
+      const freshApp = createApp();
+      const res = await request(freshApp)
+        .post("/trades/test-id/dispute")
+        .send({ reason: "test reason that is long enough", category: "DAMAGE" });
       expect(res.status).toBe(401);
     });
   });
