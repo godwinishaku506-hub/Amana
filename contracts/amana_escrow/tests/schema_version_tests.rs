@@ -16,7 +16,7 @@ fn setup() -> (Env, Address) {
     let admin = Address::generate(&env);
     let cngn = Address::generate(&env);
     let treasury = Address::generate(&env);
-    EscrowContractClient::new(&env, &escrow).initialize(&admin, &cngn, &treasury, &100u32);
+    EscrowContractClient::new(&env, &escrow).initialize(&admin, &cngn, &treasury, &100u32, &cngn);
     (env, escrow)
 }
 
