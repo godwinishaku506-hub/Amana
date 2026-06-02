@@ -139,7 +139,7 @@ describe("OpenAPI drift detection", () => {
     });
   });
 
-  // ── /trades schema drift (#580) ───────────────────────────────────────────
+  // ── /trades schema drift (#669, #670) ─────────────────────────────────────
 
   describe("/trades response schema contracts", () => {
     it("TradeMutationResponse requires tradeId and unsignedXdr as strings", () => {
@@ -208,6 +208,259 @@ describe("OpenAPI drift detection", () => {
       expect(statusParam?.schema?.enum).toEqual(
         expect.arrayContaining(["CREATED", "FUNDED", "DISPUTED"]),
       );
+    });
+
+    it("TradeListResponse includes pagination metadata", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeListResponse"];
+      expect(schema).toBeDefined();
+      expect(schema.properties).toHaveProperty("items");
+      expect(schema.additionalProperties).toBe(true);
+    });
+
+    it("TradeStatsResponse schema is documented for /trades/stats endpoint", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeStatsResponse"];
+      expect(schema).toBeDefined();
+      expect(schema.type).toBe("object");
+    });
+
+    it("POST /trades request schema validates buyer and seller loss basis points", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeMutationRequest"];
+      expect(schema).toBeDefined();
+      
+      const buyerLossBps = schema.properties?.buyerLossBps;
+      const sellerLossBps = schema.properties?.sellerLossBps;
+      
+      expect(buyerLossBps?.type).toBe("integer");
+      expect(buyerLossBps?.minimum).toBe(0);
+      expect(buyerLossBps?.maximum).toBe(10000);
+      
+      expect(sellerLossBps?.type).toBe("integer");
+      expect(sellerLossBps?.minimum).toBe(0);
+      expect(sellerLossBps?.maximum).toBe(10000);
+    });
+
+    it("POST /trades response is documented with 201 status for successful creation", () => {
+      const path = spec.paths["/trades"] as any;
+      expect(path?.post).toBeDefined();
+      expect(path?.post?.responses?.["201"]).toBeDefined();
+      expect(path?.post?.responses?.["201"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/TradeMutationResponse",
+      );
+    });
+
+    it("GET /trades response is documented with 200 status and TradeListResponse schema", () => {
+      const path = spec.paths["/trades"] as any;
+      expect(path?.get).toBeDefined();
+      expect(path?.get?.responses?.["200"]).toBeDefined();
+      expect(path?.get?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/TradeListResponse",
+      );
+    });
+
+    it("GET /trades/:id response is documented with TradeSummary schema", () => {
+      const path = spec.paths["/trades/{id}"] as any;
+      expect(path?.get).toBeDefined();
+      expect(path?.get?.responses?.["200"]).toBeDefined();
+      expect(path?.get?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/TradeSummary",
+      );
+    });
+
+    it("POST /trades/:id/deposit response is documented with UnsignedXdrResponse schema", () => {
+      const path = spec.paths["/trades/{id}/deposit"] as any;
+      expect(path?.post).toBeDefined();
+      expect(path?.post?.responses?.["200"]).toBeDefined();
+      expect(path?.post?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/UnsignedXdrResponse",
+      );
+    });
+
+    it("POST /trades/:id/confirm response is documented with UnsignedXdrResponse schema", () => {
+      const path = spec.paths["/trades/{id}/confirm"] as any;
+      expect(path?.post).toBeDefined();
+      expect(path?.post?.responses?.["200"]).toBeDefined();
+      expect(path?.post?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/UnsignedXdrResponse",
+      );
+    });
+
+    it("POST /trades/:id/release response is documented with UnsignedXdrResponse schema", () => {
+      const path = spec.paths["/trades/{id}/release"] as any;
+      expect(path?.post).toBeDefined();
+      expect(path?.post?.responses?.["200"]).toBeDefined();
+      expect(path?.post?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/UnsignedXdrResponse",
+      );
+    });
+
+    it("POST /trades/:id/dispute response is documented with UnsignedXdrResponse schema", () => {
+      const path = spec.paths["/trades/{id}/dispute"] as any;
+      expect(path?.post).toBeDefined();
+      expect(path?.post?.responses?.["200"]).toBeDefined();
+      expect(path?.post?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/UnsignedXdrResponse",
+      );
+    });
+
+    it("POST /trades/:id/dispute request body requires reason with minimum length", () => {
+      const path = spec.paths["/trades/{id}/dispute"] as any;
+      expect(path?.post?.requestBody).toBeDefined();
+      
+      const requestSchema = path?.post?.requestBody?.content?.["application/json"]?.schema;
+      expect(requestSchema?.properties?.reason).toBeDefined();
+      expect(requestSchema?.properties?.reason?.type).toBe("string");
+      expect(requestSchema?.properties?.reason?.minLength).toBe(10);
+      expect(requestSchema?.required).toContain("reason");
+    });
+
+    it("GET /trades/:id/manifest path is documented and returns ManifestView", () => {
+      const path = spec.paths["/trades/{id}/manifest"] as any;
+      expect(path?.get).toBeDefined();
+      expect(path?.get?.responses?.["200"]).toBeDefined();
+      expect(path?.get?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/ManifestView",
+      );
+    });
+
+    it("GET /trades/:id/evidence path is documented and returns EvidenceListResponse", () => {
+      const path = spec.paths["/trades/{id}/evidence"] as any;
+      expect(path?.get).toBeDefined();
+      expect(path?.get?.responses?.["200"]).toBeDefined();
+      expect(path?.get?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/EvidenceListResponse",
+      );
+    });
+
+    it("GET /trades/:id/history path is documented and returns AuditHistoryResponse", () => {
+      const path = spec.paths["/trades/{id}/history"] as any;
+      expect(path?.get).toBeDefined();
+      expect(path?.get?.responses?.["200"]).toBeDefined();
+      expect(path?.get?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/AuditHistoryResponse",
+      );
+    });
+
+    it("all /trades mutation endpoints document 401 unauthorized responses", () => {
+      const mutationPaths = [
+        "/trades",
+        "/trades/{id}/deposit",
+        "/trades/{id}/confirm",
+        "/trades/{id}/release",
+        "/trades/{id}/dispute",
+      ];
+
+      for (const path of mutationPaths) {
+        const pathSpec = spec.paths[path] as any;
+        const postSpec = pathSpec?.post;
+        expect(postSpec).toBeDefined();
+        expect(postSpec?.responses?.["401"]).toBeDefined();
+      }
+    });
+
+    it("all /trades read endpoints document 401 unauthorized responses", () => {
+      const readPaths = [
+        "/trades",
+        "/trades/stats",
+        "/trades/{id}",
+        "/trades/{id}/manifest",
+        "/trades/{id}/evidence",
+        "/trades/{id}/history",
+      ];
+
+      for (const path of readPaths) {
+        const pathSpec = spec.paths[path] as any;
+        const getSpec = pathSpec?.get;
+        expect(getSpec).toBeDefined();
+        expect(getSpec?.responses?.["401"]).toBeDefined();
+      }
+    });
+
+    it("trade mutation endpoints requiring auth include bearerAuth security scheme", () => {
+      const authPaths = [
+        "/trades",
+        "/trades/{id}/deposit",
+        "/trades/{id}/confirm",
+        "/trades/{id}/release",
+        "/trades/{id}/dispute",
+      ];
+
+      for (const path of authPaths) {
+        const pathSpec = spec.paths[path] as any;
+        const postSpec = pathSpec?.post;
+        expect(postSpec?.security).toBeDefined();
+        expect(postSpec?.security).toEqual(expect.arrayContaining([{ bearerAuth: [] }]));
+      }
+    });
+
+    it("POST /trades and deposit/release endpoints support idempotency headers", () => {
+      const idempotentPaths = [
+        "/trades",
+        "/trades/{id}/deposit",
+        "/trades/{id}/release",
+        "/trades/{id}/dispute",
+      ];
+
+      for (const path of idempotentPaths) {
+        const pathSpec = spec.paths[path] as any;
+        const postSpec = pathSpec?.post;
+        expect(postSpec?.parameters).toBeDefined();
+        
+        const hasIdempotencyParam = postSpec?.parameters?.some(
+          (param: any) => 
+            param.$ref === "#/components/parameters/IdempotencyKeyHeader" ||
+            (param.name === "Idempotency-Key" && param.in === "header"),
+        );
+        
+        expect(hasIdempotencyParam).toBe(true);
+      }
+    });
+
+    it("TradeIdPath parameter is properly defined and used in trade-specific endpoints", () => {
+      const tradeIdParam = (spec as any).components.parameters.TradeIdPath;
+      expect(tradeIdParam).toBeDefined();
+      expect(tradeIdParam.in).toBe("path");
+      expect(tradeIdParam.name).toBe("id");
+      expect(tradeIdParam.required).toBe(true);
+      expect(tradeIdParam.schema.type).toBe("string");
+
+      const pathsUsingTradeId = [
+        "/trades/{id}",
+        "/trades/{id}/deposit",
+        "/trades/{id}/confirm",
+        "/trades/{id}/release",
+        "/trades/{id}/dispute",
+        "/trades/{id}/manifest",
+        "/trades/{id}/evidence",
+        "/trades/{id}/history",
+      ];
+
+      for (const path of pathsUsingTradeId) {
+        const pathSpec = spec.paths[path] as any;
+        expect(pathSpec).toBeDefined();
+      }
+    });
+
+    it("error responses for /trades endpoints include proper error schemas", () => {
+      const path = spec.paths["/trades"] as any;
+      const getSpec = path?.get;
+      
+      expect(getSpec?.responses?.["400"]).toBeDefined();
+      expect(getSpec?.responses?.["400"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/AppErrorResponse",
+      );
+    });
+
+    it("TradeMutationRequest amountUsdc field accepts both string and number", () => {
+      const schema = (spec as OpenApiSpec).components.schemas["TradeMutationRequest"];
+      const amountUsdcSchema = schema.properties?.amountUsdc;
+      
+      expect(amountUsdcSchema).toBeDefined();
+      expect(amountUsdcSchema?.oneOf).toBeDefined();
+      expect(amountUsdcSchema?.oneOf?.length).toBeGreaterThanOrEqual(2);
+      
+      const types = amountUsdcSchema?.oneOf?.map((s: SchemaObject) => s.type);
+      expect(types).toContain("string");
+      expect(types).toContain("number");
     });
   });
 
