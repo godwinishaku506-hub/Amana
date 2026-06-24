@@ -11,7 +11,7 @@ import { env } from "./config/env";
 import { appLogger } from "./middleware/logger";
 import { initializeTracing } from "./config/tracing";
 
-env; // Validate early
+void env;
 
 // Initialize distributed tracing before any other imports
 initializeTracing();
