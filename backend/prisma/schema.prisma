@@ -63,6 +63,7 @@ model User {
   tradeTemplates  TradeTemplate[]
   watchlist       UserWatchlist[]
   refreshTokens   RefreshToken[]
+  webhookSubscriptions WebhookSubscription[]
 
   @@index([walletAddress])
 }
@@ -333,4 +334,27 @@ model RefreshToken {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([tokenHash])
+}
+
+/// WebhookSubscription model for storing user webhook configurations
+/// - url: The webhook endpoint URL
+/// - events: Array of event types to subscribe to (e.g., ["trade.created", "trade.completed"])
+/// - secretHash: Hashed secret for webhook signature verification (SHA-256)
+/// - isActive: Whether the webhook is active
+/// - userId: Reference to the user who owns this webhook
+model WebhookSubscription {
+  id          Int      @id @default(autoincrement())
+  url         String   @db.VarChar(500)
+  events      String[]
+  secretHash  String   @db.VarChar(64)
+  isActive    Boolean  @default(true)
+  userId      Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive])
 }
