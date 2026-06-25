@@ -26,6 +26,7 @@ import { stellarFeesRoutes } from "./routes/stellar.fees";
 import { stellarTxStatusRoutes } from "./routes/stellar.tx.status";
 import { stellarAssetRoutes } from "./routes/stellar.asset";
 import { stellarAccountBalanceRoutes } from "./routes/stellar.account.balance";
+import { stellarAccountCreateRoutes } from "./routes/stellar.account.create";
 import { webhooksRoutes } from "./routes/webhooks.routes";
 import { env } from "./config/env";
 
@@ -139,6 +140,7 @@ export function createApp(): express.Application {
   app.use("/stellar/fees", stellarFeesRoutes);
   app.use("/stellar/tx", stellarTxStatusRoutes);
   app.use("/stellar/assets", stellarAssetRoutes);
+  app.use("/stellar/account", stellarAccountCreateRoutes);
   app.use("/stellar/account", stellarAccountBalanceRoutes);
 
   // Treasury management
