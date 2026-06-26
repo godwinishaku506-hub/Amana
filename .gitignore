@@ -9,6 +9,7 @@ coverage/
 .env.local
 .vscode/
 *.log
+backend/lint-output.txt
 
 # Pre-migration database backups
 backups/
