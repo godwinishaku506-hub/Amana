@@ -17,6 +17,7 @@ import { createEscrowReleaseRouter } from "./routes/escrow.release.routes";
 import { createEscrowScheduleRouter } from "./routes/escrow.schedule.routes";
 import { createTradeManifestRouter } from "./routes/trade.manifest.routes";
 import { createManifestRouter } from "./routes/manifest.routes";
+import { createTradeNotesRouter } from "./routes/trade.notes.routes";
 import { createEvidenceRouter } from "./routes/evidence.routes";
 import { createAuditTrailRouter } from "./routes/auditTrail.routes";
 import { createGoalsRouter } from "./routes/goals.routes";
@@ -131,6 +132,9 @@ export function createApp(): express.Application {
   app.use("/trades", createEscrowReleaseRouter());
   app.use("/trades", createEscrowScheduleRouter());
   app.use("/trades", createTradeRouter());
+
+  // Notes: POST /trades/:id/notes and GET /trades/:id/notes
+  app.use("/trades", createTradeNotesRouter());
 
   // Manifest: POST /trades/:id/manifest
   app.use("/trades/:id/manifest", createTradeManifestRouter());
