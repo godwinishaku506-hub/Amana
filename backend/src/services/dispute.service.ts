@@ -207,6 +207,12 @@ export class DisputeService {
         );
       }
 
+      // Idempotency: a retry after a network timeout should succeed silently
+      // when the first request already applied the transition.
+      if (dispute.status === newStatus) {
+        return toDisputeResponse(dispute);
+      }
+
       assertValidTransition(dispute.status, newStatus);
 
       const applied = await applyDisputeStatusTransition(

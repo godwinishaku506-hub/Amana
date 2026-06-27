@@ -53,14 +53,13 @@ export class AuthService {
   static async verifySignatureAndIssueJWT(walletAddress: string, signedChallenge: string): Promise<string> {
     try {
       const key = `${CHALLENGE_PREFIX}${walletAddress.toLowerCase()}`;
-      const challenge = await redis.get(key);
+      // Atomic get-and-delete prevents replay: a concurrent request that calls
+      // getdel after us will receive null even before we finish verification.
+      const challenge = await (redis as any).getdel(key);
 
       if (!challenge) {
         throw new AppError(ErrorCode.AUTH_ERROR, 'Challenge expired or invalid. Request new challenge.', 401);
       }
-
-      // Replay protection: delete immediately after fetch
-      await redis.del(key);
 
       const publicKey = Keypair.fromPublicKey(walletAddress);
       let isValid = false;

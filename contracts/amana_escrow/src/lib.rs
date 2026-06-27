@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests;
 use soroban_sdk::{
-    Address, Bytes, Env, String, Symbol, Vec, contract, contractevent, contractimpl, contracttype,
-    symbol_short, token,
+    Address, Bytes, BytesN, Env, String, Symbol, Vec, contract, contractevent, contractimpl,
+    contracttype, symbol_short, token,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,9 +27,14 @@ pub const MAX_HASH_LEN: u32 = 256;
 /// `get_schema_version()` and run the matching migration. See SECURITY.md.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-/// Maximum allowed trade amount in stroops (1 quadrillion stroops ≈ 1 billion USDC).
-/// Prevents overflow in fee/loss calculations and limits exposure per trade.
-pub const MAX_TRADE_VALUE: i128 = 1_000_000_000_000_000;
+/// Maximum single-trade escrow value in stroops (i128). Set to 1 trillion cNGN
+/// to guard against fat-finger amounts that would exhaust token supply.
+pub const MAX_TRADE_VALUE: i128 = 1_000_000_000_000_i128;
+
+/// Minimum allowed platform fee in basis points (0.01%).
+pub const MIN_FEE_BPS: u32 = 1;
+/// Maximum allowed platform fee in basis points (5%).
+pub const MAX_FEE_BPS: u32 = 500;
 
 fn checked_fee_amount(amount: i128, fee_bps: u32) -> i128 {
     amount
@@ -80,6 +85,20 @@ pub struct TradeCancelledEvent {
     pub trade_id: u64,
     pub refund_amount: i128,
     pub caller: Address,
+}
+
+#[contractevent(topics = ["TCNBYR"])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TradeCancelledByBuyerEvent {
+    pub trade_id: u64,
+    pub buyer: Address,
+}
+
+#[contractevent(topics = ["UPGRAD"])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractUpgradedEvent {
+    pub admin: Address,
+    pub new_wasm_hash: BytesN<32>,
 }
 
 #[contractevent(topics = ["DELCNF"])]
@@ -175,6 +194,14 @@ pub struct MediatorRemovedEvent {
     pub mediator: Address,
 }
 
+/// Emitted when the admin updates the platform fee rate.
+#[contractevent(topics = ["FEEUPD"])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeeRateUpdatedEvent {
+    pub old_fee_bps: u32,
+    pub new_fee_bps: u32,
+}
+
 /// Emitted when a buyer initiates a path payment deposit.
 #[contractevent(topics = ["PTHINT"])]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +227,19 @@ pub struct PathPaymentExecutedEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Trade history — stored event record
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TradeEvent {
+    pub event_type: soroban_sdk::String,
+    pub timestamp: u64,
+    pub actor: Address,
+    pub data: soroban_sdk::String,
+}
+
+// ---------------------------------------------------------------------------
 // Types & Storage
 // ---------------------------------------------------------------------------
 
@@ -216,7 +256,7 @@ pub enum TradeStatus {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Trade {
+pub struct TradeV0 {
     pub trade_id: u64,
     pub buyer: Address,
     pub seller: Address,
@@ -233,6 +273,17 @@ pub struct Trade {
     /// auto-refund via `claim_expiry_refund()`. `None` means no deadline.
     pub expires_at: Option<u64>,
 }
+
+/// Versioned enum wrapping trade storage payloads.
+/// V0 is the current layout; V1 (and later) can be appended without migrating existing entries.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TradeData {
+    V0(TradeV0),
+}
+
+/// Type alias kept for backward compatibility with callers that use `Trade`.
+pub type Trade = TradeV0;
 
 /// Persistent record of a dispute created by `initiate_dispute()`.
 #[contracttype]
@@ -306,6 +357,8 @@ pub struct ReleaseSequence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DataKey {
     Trade(u64),
+    /// Ordered list of TradeEvent records for a given trade, appended on each state transition.
+    TradeHistory(u64),
     Initialized,
     Admin,
     CngnContract,
@@ -503,6 +556,29 @@ impl EscrowContract {
             .unwrap_or(CURRENT_SCHEMA_VERSION)
     }
 
+    /// Update the platform fee rate. Admin only.
+    /// `new_fee_bps` must be within [`MIN_FEE_BPS`, `MAX_FEE_BPS`].
+    /// Emits `FeeRateUpdated(old, new)`.
+    pub fn update_fee_bps(env: Env, new_fee_bps: u32) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        admin.require_auth();
+        assert!(
+            new_fee_bps >= MIN_FEE_BPS && new_fee_bps <= MAX_FEE_BPS,
+            "fee_bps out of range"
+        );
+        let old_fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeBps)
+            .unwrap_or(0);
+        env.storage().instance().set(&DataKey::FeeBps, &new_fee_bps);
+        FeeRateUpdatedEvent { old_fee_bps, new_fee_bps }.publish(&env);
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
@@ -557,6 +633,25 @@ impl EscrowContract {
             .unwrap_or_else(|| Self::default_release_sequence(trade));
         updater(&mut sequence, env.ledger().timestamp());
         env.storage().persistent().set(&key, &sequence);
+    }
+
+    /// Load a trade from persistent storage, unpacking the versioned `TradeData` envelope.
+    fn load_trade(env: &Env, key: &DataKey) -> Trade {
+        let data: TradeData = env
+            .storage()
+            .persistent()
+            .get(key)
+            .expect("Trade not found");
+        match data {
+            TradeData::V0(t) => t,
+        }
+    }
+
+    /// Save a trade to persistent storage, wrapping it in the `TradeData::V0` envelope.
+    fn save_trade(env: &Env, key: &DataKey, trade: &Trade) {
+        env.storage()
+            .persistent()
+            .set(key, &TradeData::V0(trade.clone()));
     }
 
     // -----------------------------------------------------------------------
@@ -637,13 +732,12 @@ impl EscrowContract {
             seller_loss_bps,
             expires_at,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Trade(trade_id), &trade);
+        Self::save_trade(&env, &DataKey::Trade(trade_id), &trade);
         env.storage().persistent().set(
             &DataKey::ReleaseSequence(trade_id),
             &Self::default_release_sequence(&trade),
         );
+        Self::record_trade_event(&env, trade_id, "created", trade.buyer.clone(), "trade created");
         TradeCreatedEvent {
             trade_id,
             buyer,
@@ -657,11 +751,7 @@ impl EscrowContract {
 
     pub fn deposit(env: Env, trade_id: u64) {
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
         assert!(
             matches!(trade.status, TradeStatus::Created),
             "Trade must be in Created status"
@@ -673,10 +763,11 @@ impl EscrowContract {
         trade.status = TradeStatus::Funded;
         trade.funded_at = Some(now);
         trade.updated_at = now;
-        env.storage().persistent().set(&key, &trade);
+        Self::save_trade(&env, &key, &trade);
         Self::update_release_sequence(&env, &trade, |sequence, at| {
             sequence.funded_at = Some(at);
         });
+        Self::record_trade_event(&env, trade_id, "funded", trade.buyer.clone(), "escrow funded");
         TradeFundedEvent {
             trade_id,
             amount: trade.amount,
@@ -697,11 +788,7 @@ impl EscrowContract {
         assert!(dest_min > 0, "dest_min must be greater than zero");
 
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
         assert!(
             matches!(trade.status, TradeStatus::Created),
             "Trade must be in Created status"
@@ -742,7 +829,7 @@ impl EscrowContract {
         env.storage().persistent().set(&intent_key, &intent);
 
         trade.updated_at = env.ledger().timestamp();
-        env.storage().persistent().set(&key, &trade);
+        Self::save_trade(&env, &key, &trade);
 
         PathPaymentInitiatedEvent {
             trade_id,
@@ -776,11 +863,7 @@ impl EscrowContract {
             .expect("No pending path payment");
 
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
         assert!(
             matches!(trade.status, TradeStatus::Created),
             "Trade must be in Created status"
@@ -813,7 +896,7 @@ impl EscrowContract {
         trade.status = TradeStatus::Funded;
         trade.funded_at = Some(now);
         trade.updated_at = now;
-        env.storage().persistent().set(&key, &trade);
+        Self::save_trade(&env, &key, &trade);
 
         env.storage().persistent().remove(&intent_key);
 
@@ -836,11 +919,7 @@ impl EscrowContract {
 
     pub fn cancel_trade(env: Env, trade_id: u64, caller: Address) {
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
         let admin: Address = env
             .storage()
             .instance()
@@ -884,12 +963,45 @@ impl EscrowContract {
                 } else {
                     env.storage().persistent().set(&req_key, &requests);
                     trade.updated_at = env.ledger().timestamp();
-                    env.storage().persistent().set(&key, &trade);
+                    Self::save_trade(&env, &key, &trade);
                 }
             }
         } else {
             panic!("Cannot cancel trade in current status");
         }
+    }
+
+    /// Allow the buyer to cancel a trade before funds are deposited.
+    ///
+    /// This is intentionally narrower than `cancel_trade`: only the buyer may
+    /// call it and only while the trade is still `Created`.
+    pub fn cancel_by_buyer(env: Env, trade_id: u64) {
+        let key = DataKey::Trade(trade_id);
+        let mut trade: Trade = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Trade not found");
+
+        trade.buyer.require_auth();
+        assert!(
+            matches!(trade.status, TradeStatus::Created),
+            "Trade must be in Created status"
+        );
+
+        trade.status = TradeStatus::Cancelled;
+        trade.updated_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &trade);
+        Self::update_release_sequence(&env, &trade, |sequence, at| {
+            sequence.cancelled_at = Some(at);
+        });
+
+        TradeCancelledByBuyerEvent {
+            trade_id,
+            buyer: trade.buyer,
+        }
+        .publish(&env);
+        Self::bump_instance_ttl(&env);
     }
 
     /// Unilaterally refund a funded or delivered trade.
@@ -900,11 +1012,7 @@ impl EscrowContract {
     /// a delivery issue without requiring a formal dispute.
     pub fn refund(env: Env, trade_id: u64) {
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
 
         trade.seller.require_auth();
 
@@ -995,13 +1103,12 @@ impl EscrowContract {
 
         trade.status = TradeStatus::Cancelled;
         trade.updated_at = env.ledger().timestamp();
-        env.storage()
-            .persistent()
-            .set(&DataKey::Trade(trade.trade_id), trade);
+        Self::save_trade(env, &DataKey::Trade(trade.trade_id), trade);
         Self::update_release_sequence(env, trade, |sequence, at| {
             sequence.cancelled_at = Some(at);
         });
 
+        Self::record_trade_event(env, trade.trade_id, "cancelled", caller.clone(), "trade cancelled");
         TradeCancelledEvent {
             trade_id: trade.trade_id,
             refund_amount,
@@ -1012,11 +1119,7 @@ impl EscrowContract {
 
     pub fn confirm_delivery(env: Env, trade_id: u64) {
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
         trade.buyer.require_auth();
         assert!(
             matches!(trade.status, TradeStatus::Funded),
@@ -1026,10 +1129,11 @@ impl EscrowContract {
         trade.status = TradeStatus::Delivered;
         trade.delivered_at = Some(now);
         trade.updated_at = now;
-        env.storage().persistent().set(&key, &trade);
+        Self::save_trade(&env, &key, &trade);
         Self::update_release_sequence(&env, &trade, |sequence, at| {
             sequence.delivered_at = Some(at);
         });
+        Self::record_trade_event(&env, trade_id, "delivered", trade.buyer.clone(), "delivery confirmed");
         DeliveryConfirmedEvent {
             trade_id,
             delivered_at: now,
@@ -1039,17 +1143,7 @@ impl EscrowContract {
 
     pub fn release_funds(env: Env, trade_id: u64, caller: Address) {
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Not initialized");
-
+        let mut trade: Trade = Self::load_trade(&env, &key);
         assert!(
             matches!(trade.status, TradeStatus::Delivered),
             "Trade must be delivered"
@@ -1057,6 +1151,11 @@ impl EscrowContract {
 
         caller.require_auth();
 
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
         assert!(
             caller == trade.buyer || caller == admin,
             "Unauthorized caller"
@@ -1088,10 +1187,11 @@ impl EscrowContract {
         let now = env.ledger().timestamp();
         trade.status = TradeStatus::Completed;
         trade.updated_at = now;
-        env.storage().persistent().set(&key, &trade);
+        Self::save_trade(&env, &key, &trade);
         Self::update_release_sequence(&env, &trade, |sequence, at| {
             sequence.released_at = Some(at);
         });
+        Self::record_trade_event(&env, trade_id, "released", caller.clone(), "funds released to seller");
         FundsReleasedEvent {
             trade_id,
             seller_amount,
@@ -1124,11 +1224,7 @@ impl EscrowContract {
         );
 
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
 
         assert!(
             matches!(trade.status, TradeStatus::Funded),
@@ -1154,7 +1250,7 @@ impl EscrowContract {
         // Lock the trade in Disputed state
         trade.status = TradeStatus::Disputed;
         trade.updated_at = now;
-        env.storage().persistent().set(&key, &trade);
+        Self::save_trade(&env, &key, &trade);
         Self::update_release_sequence(&env, &trade, |sequence, at| {
             sequence.disputed_at = Some(at);
         });
@@ -1237,11 +1333,7 @@ impl EscrowContract {
 
         // 2. Load and validate trade
         let key = DataKey::Trade(trade_id);
-        let mut trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let mut trade: Trade = Self::load_trade(&env, &key);
         assert!(
             matches!(trade.status, TradeStatus::Disputed),
             "Trade must be in Disputed status"
@@ -1299,7 +1391,7 @@ impl EscrowContract {
         let now = env.ledger().timestamp();
         trade.status = TradeStatus::Completed;
         trade.updated_at = now;
-        env.storage().persistent().set(&key, &trade);
+        Self::save_trade(&env, &key, &trade);
         Self::update_release_sequence(&env, &trade, |sequence, at| {
             sequence.resolved_at = Some(at);
         });
@@ -1358,11 +1450,7 @@ impl EscrowContract {
         );
 
         let key = DataKey::Trade(trade_id);
-        let trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let trade: Trade = Self::load_trade(&env, &key);
 
         assert!(
             matches!(trade.status, TradeStatus::Disputed),
@@ -1458,11 +1546,7 @@ impl EscrowContract {
         );
 
         let key = DataKey::Trade(trade_id);
-        let trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let trade: Trade = Self::load_trade(&env, &key);
 
         assert!(
             matches!(trade.status, TradeStatus::Funded | TradeStatus::Disputed),
@@ -1525,11 +1609,7 @@ impl EscrowContract {
         );
 
         let key = DataKey::Trade(trade_id);
-        let trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Trade not found");
+        let trade: Trade = Self::load_trade(&env, &key);
 
         assert!(
             matches!(trade.status, TradeStatus::Funded),
@@ -1578,11 +1658,7 @@ impl EscrowContract {
             return sequence;
         }
 
-        let trade: Trade = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Trade(trade_id))
-            .expect("Trade not found");
+        let trade: Trade = Self::load_trade(&env, &DataKey::Trade(trade_id));
         Self::default_release_sequence(&trade)
     }
 
@@ -1599,10 +1675,39 @@ impl EscrowContract {
 
     pub fn get_trade(env: Env, trade_id: u64) -> Trade {
         let key = DataKey::Trade(trade_id);
+        Self::load_trade(&env, &key)
+    }
+
+    /// Returns the chronological list of stored events for a trade.
+    /// Returns an empty Vec if the trade has no recorded events or does not exist.
+    pub fn get_trade_history(env: Env, trade_id: u64) -> soroban_sdk::Vec<TradeEvent> {
         env.storage()
             .persistent()
+            .get(&DataKey::TradeHistory(trade_id))
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env))
+    }
+
+    /// Appends a TradeEvent to the persistent history for trade_id.
+    fn record_trade_event(
+        env: &Env,
+        trade_id: u64,
+        event_type: &str,
+        actor: Address,
+        data: &str,
+    ) {
+        let key = DataKey::TradeHistory(trade_id);
+        let mut history: soroban_sdk::Vec<TradeEvent> = env
+            .storage()
+            .persistent()
             .get(&key)
-            .expect("Trade not found")
+            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+        history.push_back(TradeEvent {
+            event_type: soroban_sdk::String::from_str(env, event_type),
+            timestamp: env.ledger().timestamp(),
+            actor,
+            data: soroban_sdk::String::from_str(env, data),
+        });
+        env.storage().persistent().set(&key, &history);
     }
 
     pub fn get_contract_metrics(env: Env) -> (u64, u64, u64) {

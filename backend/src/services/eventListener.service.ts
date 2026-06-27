@@ -280,10 +280,20 @@ export class EventListenerService {
       eventId: event.eventId,
     };
 
-    const existing = await this.prisma.chainEventOutbox.findUnique({
-      where: {
-        ledgerSequence_contractId_eventId: key,
+    // Atomic upsert: concurrent poll cycles racing on the same event all get
+    // back the single canonical record without a non-atomic check-then-create.
+    const record = await this.prisma.chainEventOutbox.upsert({
+      where: { ledgerSequence_contractId_eventId: key },
+      create: {
+        ledgerSequence: event.ledgerSequence,
+        contractId: event.contractId,
+        eventId: event.eventId,
+        eventType: event.eventType,
+        tradeId: event.tradeId,
+        payload: event.data as Prisma.JsonObject,
+        status: "PENDING",
       },
+      update: {},
       select: {
         id: true,
         status: true,
@@ -291,50 +301,7 @@ export class EventListenerService {
         nextAttemptAt: true,
       },
     });
-
-    if (existing) {
-      return existing as OutboxRecord;
-    }
-
-    try {
-      const created = await this.prisma.chainEventOutbox.create({
-        data: {
-          ledgerSequence: event.ledgerSequence,
-          contractId: event.contractId,
-          eventId: event.eventId,
-          eventType: event.eventType,
-          tradeId: event.tradeId,
-          payload: event.data as Prisma.JsonObject,
-          status: "PENDING",
-        },
-        select: {
-          id: true,
-          status: true,
-          attempts: true,
-          nextAttemptAt: true,
-        },
-      });
-      return created as OutboxRecord;
-    } catch (error) {
-      if (!isPrismaUniqueConstraintError(error)) {
-        throw error;
-      }
-      const concurrent = await this.prisma.chainEventOutbox.findUnique({
-        where: {
-          ledgerSequence_contractId_eventId: key,
-        },
-        select: {
-          id: true,
-          status: true,
-          attempts: true,
-          nextAttemptAt: true,
-        },
-      });
-      if (!concurrent) {
-        throw error;
-      }
-      return concurrent as OutboxRecord;
-    }
+    return record as OutboxRecord;
   }
 
   private isOutboxReadyForAttempt(outbox: OutboxRecord): boolean {
@@ -355,6 +322,16 @@ export class EventListenerService {
   private async processOutboxEventAtomically(outboxId: number, event: ParsedEvent): Promise<void> {
     try {
       await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        // Re-read status inside the transaction: if a concurrent worker already
+        // committed PROCESSED, skip dispatch to prevent duplicate event handling.
+        const current = await tx.chainEventOutbox.findUnique({
+          where: { id: outboxId },
+          select: { status: true },
+        });
+        if (current?.status === "PROCESSED") {
+          return;
+        }
+
         await dispatchEvent(tx, event);
         await tx.processedEvent.create({
           data: {

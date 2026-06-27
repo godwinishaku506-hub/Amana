@@ -19,6 +19,10 @@ function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function sanitizeLogField(value: string, maxLength = 200): string {
+  return String(value).replace(/[\r\n\t]/g, "_").slice(0, maxLength);
+}
+
 export interface CreatePendingTradeInput {
   tradeId: string;
   buyerAddress: string;
@@ -71,16 +75,16 @@ export class TradeService {
   async createPendingTrade(input: CreatePendingTradeInput): Promise<Trade> {
     appLogger.info({
       requestId: undefined, // Will be filled by context if available
-      userId: input.buyerAddress,
-      paymentId: input.tradeId,
+      userId: sanitizeLogField(input.buyerAddress),
+      paymentId: sanitizeLogField(input.tradeId),
       provider: "stellar",
       status: "authorization_started",
       timestamp: new Date().toISOString()
     }, "Payment authorization started");
 
     TracingHelper.addEvent("authorization_started", {
-      paymentId: input.tradeId,
-      userId: input.buyerAddress
+      paymentId: sanitizeLogField(input.tradeId),
+      userId: sanitizeLogField(input.buyerAddress)
     });
 
     return this.prisma.trade.create({
