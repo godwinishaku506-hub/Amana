@@ -386,6 +386,12 @@ pub enum DataKey {
     PathPaymentIntent(u64),
     /// Stores release sequencing timestamps for a trade.
     ReleaseSequence(u64),
+    /// Aggregate number of trades ever created.
+    TotalTrades,
+    /// Aggregate number of disputes ever initiated.
+    TotalDisputes,
+    /// Aggregate number of disputes ever resolved.
+    TotalResolved,
     /// Monotonic storage-schema version, written at initialize() and read via
     /// get_schema_version(). Enables forward-compatible migrations without
     /// disturbing any existing key. Appended last so the XDR encoding of every
@@ -702,6 +708,10 @@ impl EscrowContract {
         let ledger_seq = env.ledger().sequence() as u64;
         let trade_id = (ledger_seq << 32) | next_id;
         env.storage().instance().set(&NEXT_TRADE_ID, &(next_id + 1));
+        let total_trades: u64 = env.storage().instance().get(&DataKey::TotalTrades).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalTrades, &(total_trades + 1));
         let cngn_address: Address = env
             .storage()
             .instance()
@@ -1245,7 +1255,16 @@ impl EscrowContract {
             sequence.disputed_at = Some(at);
         });
 
-        Self::record_trade_event(&env, trade_id, "disputed", initiator.clone(), "dispute initiated");
+        // Increment aggregate dispute counter
+        let total_disputes: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDisputes)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDisputes, &(total_disputes + 1));
+
         // Emit on-chain event
         DisputeInitiatedEvent {
             trade_id,
@@ -1377,7 +1396,16 @@ impl EscrowContract {
             sequence.resolved_at = Some(at);
         });
 
-        Self::record_trade_event(&env, trade_id, "resolved", mediator.clone(), "dispute resolved by mediator");
+        // Increment aggregate resolved counter
+        let total_resolved: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalResolved)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalResolved, &(total_resolved + 1));
+
         // 7. Emit event
         DisputeResolvedEvent {
             trade_id,
@@ -1680,6 +1708,25 @@ impl EscrowContract {
             data: soroban_sdk::String::from_str(env, data),
         });
         env.storage().persistent().set(&key, &history);
+    }
+
+    pub fn get_contract_metrics(env: Env) -> (u64, u64, u64) {
+        let total_trades: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalTrades)
+            .unwrap_or(0);
+        let total_disputes: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDisputes)
+            .unwrap_or(0);
+        let total_resolved: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalResolved)
+            .unwrap_or(0);
+        (total_trades, total_disputes, total_resolved)
     }
 }
 
@@ -3752,6 +3799,52 @@ mod test {
             );
             assert_eq!(cngn_token.balance(&contract_id), 0);
         }
+}
+    #[test]
+    #[should_panic(expected = "Cannot cancel trade in current status")]
+    fn test_cancel_trade_rejects_after_completed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _usdc_id, buyer, _seller, _treasury, trade_id) =
+            setup_disputed_trade(&env, 10_000, 100);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let mediator = Address::generate(&env);
+        client.set_mediator(&mediator);
+        client.resolve_dispute(&trade_id, &mediator, &10_000_u32);
+        let trade = client.get_trade(&trade_id);
+        assert!(matches!(trade.status, TradeStatus::Completed));
+        client.cancel_trade(&trade_id, &buyer);
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot cancel trade in current status")]
+    fn test_cancel_trade_rejects_after_cancelled() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(EscrowContract, ());
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        client.initialize(&admin, &usdc_id, &treasury, &100);
+        let amount = 10_000_i128;
+        let token_client = token::StellarAssetClient::new(&env, &usdc_id);
+        token_client.mint(&buyer, &amount);
+        let trade_id = client.create_trade(&buyer, &seller, &amount, &5000_u32, &5000_u32, &None);
+        client.deposit(&trade_id);
+        // Admin cancels the funded trade immediately
+        client.cancel_trade(&trade_id, &admin);
+        assert!(matches!(
+            client.get_trade(&trade_id).status,
+            TradeStatus::Cancelled
+        ));
+        // Buyer can no longer cancel - already Cancelled
+        client.cancel_trade(&trade_id, &buyer);
+
     }
 }
 
